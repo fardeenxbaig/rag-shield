@@ -18,6 +18,20 @@ Attackers can hide instructions in documents (called "prompt injection") that tr
 **The Solution:**  
 Every document is scanned by Amazon Bedrock Guardrails. Clean files are tagged and allowed. Malicious files are blocked and quarantined.
 
+## 🔍 The Real Gap
+
+### What Normal Guardrails Do:
+✅ Protect AI outputs (responses to users)
+✅ Filter harmful content in generated text
+❌ Don't scan documents before ingestion
+❌ Don't prevent malicious documents from entering KB
+
+### What RAG Shield Does:
+✅ Protect document ingestion (before KB)
+✅ Filter harmful content in uploaded documents
+✅ Prevent malicious documents from ever reaching AI
+✅ Use Guardrails proactively, not reactively
+
 **Example Attack:**
 ```
 Company Policy Document
