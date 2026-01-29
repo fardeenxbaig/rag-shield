@@ -1,6 +1,6 @@
-# RAG Shield - Poisoned RAG Quarantine Workflow
+# AWS RAG Shield - Poisoned RAG Quarantine Workflow
 
-**Automated security scanning system that protects RAG (Retrieval-Augmented Generation) pipelines from Indirect Prompt Injection attacks using Amazon Bedrock Guardrails.**
+**Automated security scanning system that protects AWS RAG (Retrieval-Augmented Generation) pipelines from Indirect Prompt Injection attacks using Amazon Bedrock Guardrails.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![AWS](https://img.shields.io/badge/AWS-Bedrock-orange)](https://aws.amazon.com/bedrock/)
