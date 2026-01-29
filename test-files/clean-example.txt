@@ -1,0 +1,8 @@
+AWS Security Best Practices
+
+This document outlines recommended security practices for AWS deployments.
+
+1. Enable MFA on all accounts
+2. Use IAM roles instead of access keys
+3. Enable CloudTrail logging
+4. Encrypt data at rest and in transit

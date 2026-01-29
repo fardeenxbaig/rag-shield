@@ -15,6 +15,15 @@ Metadata:
           - GuardrailId
           - AlertEmail
       - Label:
+          default: "Resource Naming (Optional)"
+        Parameters:
+          - RawDataBucketName
+          - ForensicBucketName
+          - KBIngestionBucketName
+          - LambdaFunctionName
+          - DynamoDBTableName
+          - SNSTopicName
+      - Label:
           default: "Knowledge Base Configuration (Optional)"
         Parameters:
           - KnowledgeBaseName
@@ -41,8 +50,13 @@ Parameters:
   
   GuardrailId:
     Type: String
-    Description: Bedrock Guardrail ID (leave empty to create during deployment)
+    Description: Bedrock Guardrail ID (leave empty to auto-create)
     Default: ''
+  
+  GuardrailName:
+    Type: String
+    Default: ''
+    Description: Custom name for Bedrock Guardrail (leave empty for auto-generated)
   
   AlertEmail:
     Type: String
@@ -63,14 +77,91 @@ Parameters:
       - cohere.embed-english-v3
       - cohere.embed-multilingual-v3
     Description: Embedding model for Knowledge Base
+  
+  # Resource Naming Parameters (Optional)
+  RawDataBucketName:
+    Type: String
+    Default: ''
+    Description: Custom name for raw data bucket (leave empty for auto-generated name)
+    AllowedPattern: '^$|^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$'
+    ConstraintDescription: Must be empty or valid S3 bucket name (lowercase, numbers, hyphens)
+  
+  ForensicBucketName:
+    Type: String
+    Default: ''
+    Description: Custom name for forensic bucket (leave empty for auto-generated name)
+    AllowedPattern: '^$|^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$'
+    ConstraintDescription: Must be empty or valid S3 bucket name (lowercase, numbers, hyphens)
+  
+  KBIngestionBucketName:
+    Type: String
+    Default: ''
+    Description: Custom name for KB ingestion bucket - DualBucket mode only (leave empty for auto-generated)
+    AllowedPattern: '^$|^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$'
+    ConstraintDescription: Must be empty or valid S3 bucket name (lowercase, numbers, hyphens)
+  
+  LambdaFunctionName:
+    Type: String
+    Default: ''
+    Description: Custom name for Lambda function (leave empty for auto-generated name)
+    AllowedPattern: '^$|^[a-zA-Z0-9-_]{1,64}$'
+    ConstraintDescription: Must be empty or valid Lambda function name
+  
+  DynamoDBTableName:
+    Type: String
+    Default: ''
+    Description: Custom name for DynamoDB audit table (leave empty for auto-generated name)
+    AllowedPattern: '^$|^[a-zA-Z0-9._-]{3,255}$'
+    ConstraintDescription: Must be empty or valid DynamoDB table name
+  
+  SNSTopicName:
+    Type: String
+    Default: ''
+    Description: Custom name for SNS alert topic (leave empty for auto-generated name)
+    AllowedPattern: '^$|^[a-zA-Z0-9_-]{1,256}$'
+    ConstraintDescription: Must be empty or valid SNS topic name
 
 Conditions:
   IsSingleBucket: !Equals [!Ref DeploymentMode, 'SingleBucket']
   IsDualBucket: !Equals [!Ref DeploymentMode, 'DualBucket']
   ShouldCreateKB: !Equals [!Ref CreateBedrockKB, 'true']
   HasGuardrailId: !Not [!Equals [!Ref GuardrailId, '']]
+  ShouldCreateGuardrail: !Equals [!Ref GuardrailId, '']
+  HasCustomRawBucket: !Not [!Equals [!Ref RawDataBucketName, '']]
+  HasCustomForensicBucket: !Not [!Equals [!Ref ForensicBucketName, '']]
+  HasCustomKBBucket: !Not [!Equals [!Ref KBIngestionBucketName, '']]
+  HasCustomLambdaName: !Not [!Equals [!Ref LambdaFunctionName, '']]
+  HasCustomTableName: !Not [!Equals [!Ref DynamoDBTableName, '']]
+  HasCustomTopicName: !Not [!Equals [!Ref SNSTopicName, '']]
+  HasCustomGuardrailName: !Not [!Equals [!Ref GuardrailName, '']]
 
 Resources:
+  # ============================================================================
+  # BEDROCK GUARDRAIL
+  # ============================================================================
+  
+  BedrockGuardrail:
+    Type: AWS::Bedrock::Guardrail
+    Condition: ShouldCreateGuardrail
+    Properties:
+      Name: !If 
+        - HasCustomGuardrailName
+        - !Ref GuardrailName
+        - !Sub '${AWS::StackName}-Guardrail'
+      BlockedInputMessaging: "Content blocked: Potential prompt injection detected"
+      BlockedOutputsMessaging: "Response blocked: Security policy violation"
+      Description: "Detects and blocks prompt injection attacks in RAG pipeline"
+      ContentPolicyConfig:
+        FiltersConfig:
+          - Type: PROMPT_ATTACK
+            InputStrength: HIGH
+            OutputStrength: NONE
+      Tags:
+        - Key: Purpose
+          Value: RAG Security
+        - Key: ManagedBy
+          Value: CloudFormation
+
   # ============================================================================
   # S3 BUCKETS
   # ============================================================================
@@ -79,7 +170,10 @@ Resources:
   RawDataBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub '${AWS::StackName}-raw-data-${AWS::AccountId}'
+      BucketName: !If 
+        - HasCustomRawBucket
+        - !Ref RawDataBucketName
+        - !Sub '${AWS::StackName}-raw-data-${AWS::AccountId}'
       NotificationConfiguration:
         EventBridgeConfiguration:
           EventBridgeEnabled: true
@@ -101,6 +195,11 @@ Resources:
     Type: AWS::S3::Bucket
     Condition: IsDualBucket
     Properties:
+      BucketName: !If 
+        - HasCustomKBBucket
+        - !Ref KBIngestionBucketName
+        - !Sub '${AWS::StackName}-kb-ingestion-${AWS::AccountId}'
+    Properties:
       BucketName: !Sub '${AWS::StackName}-kb-ingestion-${AWS::AccountId}'
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
@@ -117,7 +216,10 @@ Resources:
   ForensicBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub '${AWS::StackName}-forensic-${AWS::AccountId}'
+      BucketName: !If 
+        - HasCustomForensicBucket
+        - !Ref ForensicBucketName
+        - !Sub '${AWS::StackName}-forensic-${AWS::AccountId}'
       ObjectLockEnabled: true
       ObjectLockConfiguration:
         ObjectLockEnabled: Enabled
@@ -213,7 +315,10 @@ Resources:
   Scanner:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: !Sub '${AWS::StackName}-Scanner'
+      FunctionName: !If 
+        - HasCustomLambdaName
+        - !Ref LambdaFunctionName
+        - !Sub '${AWS::StackName}-Scanner'
       Runtime: python3.12
       Handler: index.lambda_handler
       Role: !GetAtt ScannerRole.Arn
@@ -224,7 +329,10 @@ Resources:
           AUDIT_TABLE_NAME: !Ref AuditTable
           FORENSIC_BUCKET_NAME: !Ref ForensicBucket
           SNS_TOPIC_ARN: !Ref AlertTopic
-          GUARDRAIL_ID: !Ref GuardrailId
+          GUARDRAIL_ID: !If
+            - HasGuardrailId
+            - !Ref GuardrailId
+            - !GetAtt BedrockGuardrail.GuardrailId
           GUARDRAIL_VERSION: DRAFT
           DEPLOYMENT_MODE: !Ref DeploymentMode
           KB_INGESTION_BUCKET: !If
@@ -233,9 +341,139 @@ Resources:
             - ''
       Code:
         ZipFile: |
-          # Placeholder - deploy actual code via update-function-code
+          import json, boto3, os, hashlib, logging
+          from datetime import datetime
+          from io import BytesIO
+          
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          
+          s3 = boto3.client('s3')
+          bedrock = boto3.client('bedrock-runtime')
+          securityhub = boto3.client('securityhub')
+          sns = boto3.client('sns')
+          dynamodb = boto3.resource('dynamodb')
+          
+          AUDIT_TABLE = dynamodb.Table(os.environ['AUDIT_TABLE_NAME'])
+          FORENSIC_BUCKET = os.environ['FORENSIC_BUCKET_NAME']
+          SNS_TOPIC = os.environ.get('SNS_TOPIC_ARN')
+          GUARDRAIL_ID = os.environ.get('GUARDRAIL_ID')
+          GUARDRAIL_VERSION = os.environ.get('GUARDRAIL_VERSION', 'DRAFT')
+          DEPLOYMENT_MODE = os.environ.get('DEPLOYMENT_MODE', 'SingleBucket')
+          KB_INGESTION_BUCKET = os.environ.get('KB_INGESTION_BUCKET', '')
+          
           def lambda_handler(event, context):
-              return {'statusCode': 200}
+              scan_id = context.aws_request_id
+              logger.info(f"Scan started - ID: {scan_id}, Mode: {DEPLOYMENT_MODE}")
+              
+              try:
+                  bucket = event['detail']['bucket']['name']
+                  key = event['detail']['object']['key']
+                  logger.info(f"Processing: s3://{bucket}/{key}")
+                  
+                  # Download file
+                  obj = s3.get_object(Bucket=bucket, Key=key)
+                  content = obj['Body'].read()
+                  
+                  # Extract text
+                  try:
+                      text = content.decode('utf-8')
+                  except:
+                      text = str(content)
+                  
+                  # Scan with Bedrock Guardrails
+                  response = bedrock.apply_guardrail(
+                      guardrailIdentifier=GUARDRAIL_ID,
+                      guardrailVersion=GUARDRAIL_VERSION,
+                      source='INPUT',
+                      content=[{'text': {'text': text}}]
+                  )
+                  
+                  action = response.get('action', 'NONE')
+                  is_malicious = action == 'GUARDRAIL_INTERVENED'
+                  status = 'Malicious' if is_malicious else 'Clean'
+                  
+                  logger.info(f"Scan result: {status}")
+                  
+                  # Tag file
+                  s3.put_object_tagging(
+                      Bucket=bucket,
+                      Key=key,
+                      Tagging={'TagSet': [
+                          {'Key': 'ScanStatus', 'Value': status},
+                          {'Key': 'ScanTimestamp', 'Value': datetime.utcnow().isoformat()},
+                          {'Key': 'ScanId', 'Value': scan_id}
+                      ]}
+                  )
+                  
+                  # Handle malicious files
+                  if is_malicious:
+                      # Quarantine
+                      date_path = datetime.utcnow().strftime('%Y/%m/%d')
+                      forensic_key = f"quarantine/{date_path}/{scan_id}/{key}"
+                      s3.copy_object(
+                          CopySource={'Bucket': bucket, 'Key': key},
+                          Bucket=FORENSIC_BUCKET,
+                          Key=forensic_key
+                      )
+                      
+                      # Security Hub finding
+                      try:
+                          securityhub.batch_import_findings(Findings=[{
+                              'SchemaVersion': '2018-10-08',
+                              'Id': f"rag-scanner/{scan_id}",
+                              'ProductArn': f"arn:aws:securityhub:{os.environ['AWS_REGION']}:{context.invoked_function_arn.split(':')[4]}:product/{context.invoked_function_arn.split(':')[4]}/default",
+                              'GeneratorId': 'poisoned-rag-scanner',
+                              'AwsAccountId': context.invoked_function_arn.split(':')[4],
+                              'Types': ['Software and Configuration Checks/Vulnerabilities/Prompt Injection'],
+                              'CreatedAt': datetime.utcnow().isoformat() + 'Z',
+                              'UpdatedAt': datetime.utcnow().isoformat() + 'Z',
+                              'Severity': {'Label': 'HIGH'},
+                              'Title': 'Prompt Injection Detected in RAG Document',
+                              'Description': f"Malicious content detected in {key}",
+                              'Resources': [{'Type': 'AwsS3Object', 'Id': f"arn:aws:s3:::{bucket}/{key}"}],
+                              'Workflow': {'Status': 'NEW'}
+                          }])
+                      except Exception as e:
+                          logger.error(f"Security Hub error: {e}")
+                      
+                      # SNS alert
+                      if SNS_TOPIC:
+                          try:
+                              sns.publish(
+                                  TopicArn=SNS_TOPIC,
+                                  Subject='🚨 Malicious Document Detected',
+                                  Message=f"File: {key}\nBucket: {bucket}\nScan ID: {scan_id}\nQuarantined: s3://{FORENSIC_BUCKET}/{forensic_key}"
+                              )
+                          except Exception as e:
+                              logger.error(f"SNS error: {e}")
+                  
+                  # DualBucket: Copy clean files to KB bucket
+                  elif DEPLOYMENT_MODE == 'DualBucket' and KB_INGESTION_BUCKET:
+                      s3.copy_object(
+                          CopySource={'Bucket': bucket, 'Key': key},
+                          Bucket=KB_INGESTION_BUCKET,
+                          Key=key
+                      )
+                      logger.info(f"Copied to KB bucket: {KB_INGESTION_BUCKET}/{key}")
+                  
+                  # Audit log
+                  AUDIT_TABLE.put_item(Item={
+                      'scan_id': scan_id,
+                      'timestamp': datetime.utcnow().isoformat(),
+                      'bucket': bucket,
+                      'key': key,
+                      'status': status,
+                      'is_malicious': is_malicious,
+                      'deployment_mode': DEPLOYMENT_MODE,
+                      'guardrail_action': action
+                  })
+                  
+                  return {'statusCode': 200, 'body': json.dumps({'status': status, 'scan_id': scan_id})}
+                  
+              except Exception as e:
+                  logger.error(f"Error: {str(e)}")
+                  raise
 
   # ============================================================================
   # EVENTBRIDGE RULE
@@ -274,7 +512,10 @@ Resources:
   AuditTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: !Sub '${AWS::StackName}-AuditLog'
+      TableName: !If 
+        - HasCustomTableName
+        - !Ref DynamoDBTableName
+        - !Sub '${AWS::StackName}-AuditLog'
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: scan_id
@@ -297,7 +538,10 @@ Resources:
   AlertTopic:
     Type: AWS::SNS::Topic
     Properties:
-      TopicName: !Sub '${AWS::StackName}-Alerts'
+      TopicName: !If 
+        - HasCustomTopicName
+        - !Ref SNSTopicName
+        - !Sub '${AWS::StackName}-Alerts'
       DisplayName: Poisoned RAG Security Alerts
 
   AlertEmailSubscription:
