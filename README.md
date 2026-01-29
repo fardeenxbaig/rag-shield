@@ -10,7 +10,7 @@
 
 ## 🎯 What Does This Do?
 
-RAG Shield automatically scans every document before it enters your RAG pipeline. It detects and blocks malicious content that could manipulate your AI system. Fully automated, scalable, ML powered, pre-ingestion security solution for RAG pipelines 
+RAG Shield automatically scans every document before it enters your RAG pipeline. It detects and blocks malicious content that could manipulate your AI system. Fully automated, ML powered, pre-ingestion security solution for RAG pipelines to safeguard your Knowledge Bases in Amazon Bedrock.
 
 **The Problem:**  
 Attackers can hide instructions in documents (called "prompt injection") that trick your AI into doing things it shouldn't.
