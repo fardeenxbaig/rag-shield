@@ -1,6 +1,6 @@
-# RAG Shield
+# RAG Shield - Poisoned RAG Quarantine Workflow
 
-**Protect your RAG (Retrieval-Augmented Generation) pipeline from prompt injection attacks using Amazon Bedrock Guardrails.**
+**Automated security scanning system that protects RAG (Retrieval-Augmented Generation) pipelines from Indirect Prompt Injection attacks using Amazon Bedrock Guardrails.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![AWS](https://img.shields.io/badge/AWS-Bedrock-orange)](https://aws.amazon.com/bedrock/)
@@ -16,7 +16,7 @@ RAG Shield automatically scans every document before it enters your RAG pipeline
 Attackers can hide instructions in documents (called "prompt injection") that trick your AI into doing things it shouldn't.
 
 **The Solution:**  
-Every document is scanned by Amazon Bedrock Guardrails. Clean files are allowed through. Malicious files are blocked and quarantined.
+Every document is scanned by Amazon Bedrock Guardrails. Clean files are tagged and allowed. Malicious files are blocked and quarantined.
 
 **Example Attack:**
 ```
