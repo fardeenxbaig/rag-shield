@@ -146,6 +146,7 @@ aws s3api get-object-tagging \
 - ✅ **One-Click Deploy** - Single command, no manual steps
 - ✅ **Quarantine** - Malicious files isolated with 90-day retention
 - ✅ **Security Alerts** - Email notifications for threats
+- ✅ **Security Hub CSPM Integration** - Automatic Security Hub CSPM findings for detected threats
 - ✅ **Audit Trail** - Complete logging in DynamoDB
 - ✅ **Serverless** - Scales automatically, pay per scan
 - ✅ **Two Modes** - SingleBucket (simple) or DualBucket (isolated)
@@ -160,6 +161,7 @@ aws s3api get-object-tagging \
 | **Lambda Function** | Scans files and applies tags |
 | **S3 Raw Bucket** | Where you upload documents |
 | **S3 Forensic Bucket** | Quarantine for malicious files |
+| **Security Hub CSPM Integration** | Automatic security hub CSPM findings |
 | **DynamoDB Table** | Audit log of all scans |
 | **SNS Topic** | Email alerts for threats |
 | **IAM Roles** | Permissions for Lambda |
@@ -271,6 +273,20 @@ LAMBDA=$(aws cloudformation describe-stacks \
 
 aws logs tail /aws/lambda/$LAMBDA --follow --region us-east-1
 ```
+### View Security Hub Findings
+
+bash
+# View all RAG Shield findings
+aws securityhub get-findings \
+ --filters '{"GeneratorId":[{"Value":"poisoned-rag-scanner","Comparison":"EQUALS"}]}' \
+ --region us-east-1
+
+# Count findings by severity
+aws securityhub get-findings \
+ --filters '{"GeneratorId":[{"Value":"poisoned-rag-scanner","Comparison":"EQUALS"}]}' \
+ --query 'Findings[*].Severity.Label' \
+ --output text \
+ --region us-east-1 | sort | uniq -c
 
 ---
 
