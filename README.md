@@ -275,7 +275,7 @@ aws logs tail /aws/lambda/$LAMBDA --follow --region us-east-1
 ```
 ### View Security Hub Findings
 
-bash
+```bash
 # View all RAG Shield findings
 aws securityhub get-findings \
  --filters '{"GeneratorId":[{"Value":"poisoned-rag-scanner","Comparison":"EQUALS"}]}' \
@@ -287,8 +287,7 @@ aws securityhub get-findings \
  --query 'Findings[*].Severity.Label' \
  --output text \
  --region us-east-1 | sort | uniq -c
-
----
+```
 
 ## 🛠️ Troubleshooting
 
