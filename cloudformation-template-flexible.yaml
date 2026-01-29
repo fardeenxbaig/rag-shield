@@ -1,0 +1,383 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Poisoned RAG Quarantine - Flexible deployment with Single or Dual bucket modes'
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Deployment Configuration"
+        Parameters:
+          - DeploymentMode
+          - CreateBedrockKB
+      - Label:
+          default: "Security Configuration"
+        Parameters:
+          - GuardrailId
+          - AlertEmail
+      - Label:
+          default: "Knowledge Base Configuration (Optional)"
+        Parameters:
+          - KnowledgeBaseName
+          - EmbeddingModel
+
+Parameters:
+  DeploymentMode:
+    Type: String
+    Default: SingleBucket
+    AllowedValues:
+      - SingleBucket
+      - DualBucket
+    Description: |
+      SingleBucket: Scan files in-place, KB reads from same bucket with ABAC (simpler, recommended).
+      DualBucket: Scan in staging bucket, copy clean files to separate KB bucket (isolated).
+  
+  CreateBedrockKB:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Automatically create Bedrock Knowledge Base
+  
+  GuardrailId:
+    Type: String
+    Description: Bedrock Guardrail ID (leave empty to create during deployment)
+    Default: ''
+  
+  AlertEmail:
+    Type: String
+    Description: Email address for security alerts
+    Default: security-team@company.com
+  
+  KnowledgeBaseName:
+    Type: String
+    Default: RAG-Knowledge-Base
+    Description: Name for Bedrock Knowledge Base (only if CreateBedrockKB=true)
+  
+  EmbeddingModel:
+    Type: String
+    Default: amazon.titan-embed-text-v2:0
+    AllowedValues:
+      - amazon.titan-embed-text-v2:0
+      - amazon.titan-embed-text-v1
+      - cohere.embed-english-v3
+      - cohere.embed-multilingual-v3
+    Description: Embedding model for Knowledge Base
+
+Conditions:
+  IsSingleBucket: !Equals [!Ref DeploymentMode, 'SingleBucket']
+  IsDualBucket: !Equals [!Ref DeploymentMode, 'DualBucket']
+  ShouldCreateKB: !Equals [!Ref CreateBedrockKB, 'true']
+  HasGuardrailId: !Not [!Equals [!Ref GuardrailId, '']]
+
+Resources:
+  # ============================================================================
+  # S3 BUCKETS
+  # ============================================================================
+  
+  # Raw Data / Staging Bucket (always created)
+  RawDataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${AWS::StackName}-raw-data-${AWS::AccountId}'
+      NotificationConfiguration:
+        EventBridgeConfiguration:
+          EventBridgeEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Purpose
+          Value: Document Scanning
+        - Key: Mode
+          Value: !Ref DeploymentMode
+
+  # KB Ingestion Bucket (only for DualBucket mode)
+  KBIngestionBucket:
+    Type: AWS::S3::Bucket
+    Condition: IsDualBucket
+    Properties:
+      BucketName: !Sub '${AWS::StackName}-kb-ingestion-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Purpose
+          Value: Clean Documents for KB
+
+  # Forensic Bucket (always created)
+  ForensicBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${AWS::StackName}-forensic-${AWS::AccountId}'
+      ObjectLockEnabled: true
+      ObjectLockConfiguration:
+        ObjectLockEnabled: Enabled
+        Rule:
+          DefaultRetention:
+            Mode: GOVERNANCE
+            Days: 90
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Purpose
+          Value: Quarantine Storage
+
+  # ============================================================================
+  # S3 BUCKET POLICIES
+  # ============================================================================
+  
+  # ABAC Policy for SingleBucket mode
+  RawDataBucketPolicySingleBucket:
+    Type: AWS::S3::BucketPolicy
+    Condition: IsSingleBucket
+    Properties:
+      Bucket: !Ref RawDataBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyUnscannedIngestion
+            Effect: Deny
+            Principal:
+              Service: bedrock.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub '${RawDataBucket.Arn}/*'
+            Condition:
+              StringNotEquals:
+                s3:ExistingObjectTag/ScanStatus: Clean
+
+  # ============================================================================
+  # LAMBDA FUNCTION
+  # ============================================================================
+  
+  ScannerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ScannerPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:PutObjectTagging
+                  - s3:GetObjectTagging
+                Resource:
+                  - !Sub '${RawDataBucket.Arn}/*'
+                  - !Sub '${ForensicBucket.Arn}/*'
+                  - !If
+                    - IsDualBucket
+                    - !Sub '${KBIngestionBucket.Arn}/*'
+                    - !Ref AWS::NoValue
+              - Effect: Allow
+                Action:
+                  - bedrock:ApplyGuardrail
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - securityhub:BatchImportFindings
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref AlertTopic
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !GetAtt AuditTable.Arn
+
+  Scanner:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AWS::StackName}-Scanner'
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt ScannerRole.Arn
+      Timeout: 60
+      MemorySize: 512
+      Environment:
+        Variables:
+          AUDIT_TABLE_NAME: !Ref AuditTable
+          FORENSIC_BUCKET_NAME: !Ref ForensicBucket
+          SNS_TOPIC_ARN: !Ref AlertTopic
+          GUARDRAIL_ID: !Ref GuardrailId
+          GUARDRAIL_VERSION: DRAFT
+          DEPLOYMENT_MODE: !Ref DeploymentMode
+          KB_INGESTION_BUCKET: !If
+            - IsDualBucket
+            - !Ref KBIngestionBucket
+            - ''
+      Code:
+        ZipFile: |
+          # Placeholder - deploy actual code via update-function-code
+          def lambda_handler(event, context):
+              return {'statusCode': 200}
+
+  # ============================================================================
+  # EVENTBRIDGE RULE
+  # ============================================================================
+  
+  S3UploadRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Trigger scanner on S3 uploads
+      EventPattern:
+        source:
+          - aws.s3
+        detail-type:
+          - Object Created
+        detail:
+          bucket:
+            name:
+              - !Ref RawDataBucket
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt Scanner.Arn
+          Id: ScannerTarget
+
+  ScannerInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref Scanner
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt S3UploadRule.Arn
+
+  # ============================================================================
+  # DYNAMODB TABLE
+  # ============================================================================
+  
+  AuditTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-AuditLog'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: scan_id
+          AttributeType: S
+        - AttributeName: timestamp
+          AttributeType: S
+      KeySchema:
+        - AttributeName: scan_id
+          KeyType: HASH
+        - AttributeName: timestamp
+          KeyType: RANGE
+      Tags:
+        - Key: Purpose
+          Value: Audit Trail
+
+  # ============================================================================
+  # SNS TOPIC
+  # ============================================================================
+  
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${AWS::StackName}-Alerts'
+      DisplayName: Poisoned RAG Security Alerts
+
+  AlertEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: email
+      TopicArn: !Ref AlertTopic
+      Endpoint: !Ref AlertEmail
+
+  # ============================================================================
+  # BEDROCK KNOWLEDGE BASE (Optional)
+  # ============================================================================
+  
+  KnowledgeBaseRole:
+    Type: AWS::IAM::Role
+    Condition: ShouldCreateKB
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: KBPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !If
+                    - IsSingleBucket
+                    - !GetAtt RawDataBucket.Arn
+                    - !GetAtt KBIngestionBucket.Arn
+                  - !If
+                    - IsSingleBucket
+                    - !Sub '${RawDataBucket.Arn}/*'
+                    - !Sub '${KBIngestionBucket.Arn}/*'
+
+Outputs:
+  DeploymentMode:
+    Description: Deployment mode selected
+    Value: !Ref DeploymentMode
+  
+  RawDataBucketName:
+    Description: Raw data / staging bucket name
+    Value: !Ref RawDataBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-RawDataBucket'
+  
+  KBIngestionBucketName:
+    Condition: IsDualBucket
+    Description: KB ingestion bucket name (DualBucket mode only)
+    Value: !Ref KBIngestionBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-KBIngestionBucket'
+  
+  ForensicBucketName:
+    Description: Forensic quarantine bucket name
+    Value: !Ref ForensicBucket
+  
+  LambdaFunctionName:
+    Description: Scanner Lambda function name
+    Value: !Ref Scanner
+  
+  AuditTableName:
+    Description: DynamoDB audit table name
+    Value: !Ref AuditTable
+  
+  SNSTopicArn:
+    Description: SNS alert topic ARN
+    Value: !Ref AlertTopic
+  
+  UsageInstructions:
+    Description: How to use this deployment
+    Value: !If
+      - IsSingleBucket
+      - !Sub 'SingleBucket Mode: Upload documents to ${RawDataBucket}. Configure Bedrock KB to read from same bucket. ABAC policy enforces tag-based access.'
+      - !Sub 'DualBucket Mode: Upload documents to ${RawDataBucket}. Clean files auto-copied to ${KBIngestionBucket}. Configure Bedrock KB to read from KB bucket.'
